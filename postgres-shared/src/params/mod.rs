@@ -1,5 +1,5 @@
 //! Connection parameters
-use std::error::Error;
+use error::UrlParseError;
 use std::mem;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -175,17 +175,17 @@ impl Builder {
 /// A trait implemented by types that can be converted into a `ConnectParams`.
 pub trait IntoConnectParams {
     /// Converts the value of `self` into a `ConnectParams`.
-    fn into_connect_params(self) -> Result<ConnectParams, Box<Error + Sync + Send>>;
+    fn into_connect_params(self) -> Result<ConnectParams, UrlParseError>;
 }
 
 impl IntoConnectParams for ConnectParams {
-    fn into_connect_params(self) -> Result<ConnectParams, Box<Error + Sync + Send>> {
+    fn into_connect_params(self) -> Result<ConnectParams, UrlParseError> {
         Ok(self)
     }
 }
 
 impl<'a> IntoConnectParams for &'a str {
-    fn into_connect_params(self) -> Result<ConnectParams, Box<Error + Sync + Send>> {
+    fn into_connect_params(self) -> Result<ConnectParams, UrlParseError> {
         match Url::parse(self) {
             Ok(url) => url.into_connect_params(),
             Err(err) => Err(err.into()),
@@ -194,13 +194,13 @@ impl<'a> IntoConnectParams for &'a str {
 }
 
 impl IntoConnectParams for String {
-    fn into_connect_params(self) -> Result<ConnectParams, Box<Error + Sync + Send>> {
+    fn into_connect_params(self) -> Result<ConnectParams, UrlParseError> {
         self.as_str().into_connect_params()
     }
 }
 
 impl IntoConnectParams for Url {
-    fn into_connect_params(self) -> Result<ConnectParams, Box<Error + Sync + Send>> {
+    fn into_connect_params(self) -> Result<ConnectParams, UrlParseError> {
         let Url {
             host,
             port,
@@ -232,12 +232,12 @@ impl IntoConnectParams for Url {
         for (name, value) in options {
             match &*name {
                 "connect_timeout" => {
-                    let timeout = value.parse().map_err(|_| "invalid connect_timeout")?;
+                    let timeout = value.parse().map_err(|_| UrlParseError::InvalidConnectionTimeout)?;
                     let timeout = Duration::from_secs(timeout);
                     builder.connect_timeout(Some(timeout));
                 }
                 "keepalive" => {
-                    let keepalive = value.parse().map_err(|_| "invalid keepalive")?;
+                    let keepalive = value.parse().map_err(|_| UrlParseError::InvalidKeepalive)?;
                     let keepalive = Duration::from_secs(keepalive);
                     builder.keepalive(Some(keepalive));
                 }

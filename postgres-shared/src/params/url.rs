@@ -9,6 +9,7 @@
 // except according to those terms.
 use std::str::FromStr;
 use hex::FromHex;
+use error::{DecodeError, AuthorityDecodeError, ComponentDecodeError, SchemeDecodeError};
 
 pub struct Url {
     pub scheme: String,
@@ -110,7 +111,7 @@ impl UserInfo {
     }
 }
 
-pub type DecodeResult<T> = Result<T, String>;
+pub type DecodeResult<T> = Result<T, DecodeError>;
 
 pub fn decode_component(container: &str) -> DecodeResult<String> {
     decode_inner(container, false)
@@ -127,25 +128,11 @@ fn decode_inner(c: &str, full_url: bool) -> DecodeResult<String> {
                     '%' => {
                         let bytes = match (iter.next(), iter.next()) {
                             (Some(one), Some(two)) => [one, two],
-                            _ => {
-                                return Err(
-                                    "Malformed input: found '%' without two \
-                                                    trailing bytes"
-                                        .to_owned(),
-                                )
-                            }
+                            _ => return Err(ComponentDecodeError::NoTwoTrailingBytes),
                         };
-
                         let bytes_from_hex = match Vec::<u8>::from_hex(&bytes) {
                             Ok(b) => b,
-                            _ => {
-                                return Err(
-                                    "Malformed input: found '%' followed by \
-                                            invalid hex  values. Character '%' must \
-                                            escaped."
-                                        .to_owned(),
-                                )
-                            }
+                            _ => return Err(ComponentDecodeError::PercentageSignNotEscaped),
                         };
 
                         // Only decode some characters if full_url:
@@ -200,22 +187,22 @@ pub fn get_scheme(rawurl: &str) -> DecodeResult<(&str, &str)> {
                     continue;
                 }
 
-                Err("url: Scheme must begin with a letter.".to_owned())
+                Err(DecodeError::Scheme(SchemeDecodeError::SchemeMustBeginWithLetter))
             }
             ':' => {
                 if i == 0 {
-                    Err("url: Scheme cannot be empty.".to_owned())
+                    Err(DecodeError::Scheme(SchemeDecodeError::EmptyScheme))
                 } else {
                     Ok((&rawurl[0..i], &rawurl[i + 1..rawurl.len()]))
                 }
             }
-            _ => Err("url: Invalid character in scheme.".to_owned()),
+            _ => Err(DecodeError::Scheme(SchemeDecodeError::InvalidCharacter)),
         };
 
         return result;
     }
 
-    Err("url: Scheme must be terminated with a colon.".to_owned())
+    Err(DecodeError::Scheme(SchemeDecodeError::SchemeNotTerminatedWithColon))
 }
 
 // returns userinfo, host, port, and unparsed part, or an error
@@ -268,7 +255,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
             ':' | '@' | '?' | '#' | '/' => {
                 // separators, don't change anything
             }
-            _ => return Err("Illegal character in authority".to_owned()),
+            _ => return Err(DecodeError::Authority(AuthorityDecodeError::IllegalCharacterAuthority)),
         }
 
         // now process states
@@ -283,7 +270,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
                     State::PassHostPort => {
                         // multiple colons means ipv6 address.
                         if input == Input::Unreserved {
-                            return Err("Illegal characters in IPv6 address.".to_owned());
+                            return Err(DecodeError::Authority(AuthorityDecodeError::IllegalCharacterIPv6));
                         }
                         st = State::Ip6Host;
                     }
@@ -300,7 +287,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
                     }
                     State::Ip6Port => {
                         if input == Input::Unreserved {
-                            return Err("Illegal characters in authority.".to_owned());
+                            return Err(DecodeError::Authority(AuthorityDecodeError::IllegalCharacterAuthority));
                         }
                         st = State::Ip6Host;
                     }
@@ -311,7 +298,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
                             st = State::InPort;
                         }
                     }
-                    _ => return Err("Invalid ':' in authority.".to_owned()),
+                    _ => return Err(DecodeError::Authority(AuthorityDecodeError::InvalidDoubleColon)),
                 }
                 input = Input::Digit; // reset input class
             }
@@ -331,7 +318,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
                         userinfo = Some(UserInfo::new(user, Some(pass)));
                         st = State::InHost;
                     }
-                    _ => return Err("Invalid '@' in authority.".to_owned()),
+                    _ => return Err(DecodeError::Authority(AuthorityDecodeError::InvalidAtSign)),
                 }
                 begin = i + 1;
             }
@@ -348,7 +335,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
     match st {
         State::PassHostPort | State::Ip6Port => {
             if input != Input::Digit {
-                return Err("Non-digit characters in port.".to_owned());
+                return Err(DecodeError::Authority(AuthorityDecodeError::PortHasNonDigitChars));
             }
             host = &rawurl[begin..pos];
             port = Some(&rawurl[pos + 1..end]);
@@ -356,7 +343,7 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
         State::Ip6Host | State::InHost | State::Start => host = &rawurl[begin..end],
         State::InPort => {
             if input != Input::Digit {
-                return Err("Non-digit characters in port.".to_owned());
+                return Err(DecodeError::Authority(AuthorityDecodeError::PortHasNonDigitChars));
             }
             port = Some(&rawurl[pos + 1..end]);
         }
@@ -367,9 +354,15 @@ fn get_authority(rawurl: &str) -> DecodeResult<(Option<UserInfo>, &str, Option<u
     let port = match port {
         None => None,
         opt => {
-            match opt.and_then(|p| FromStr::from_str(p).ok()) {
-                None => return Err(format!("Failed to parse port: {:?}", port)),
-                opt => opt,
+            match opt {
+                Some(s) => {
+                    use std::u16;
+                    match u16::from_str(s).ok() {
+                        Some(o) => Some(o),
+                        None => return Err(DecodeError::Authority(AuthorityDecodeError::FailedToParsePort(s.to_owned()))),
+                    }
+                }
+                None => None,
             }
         }
     };
@@ -390,7 +383,7 @@ fn get_path(rawurl: &str, is_authority: bool) -> DecodeResult<(String, &str)> {
                 end = i;
                 break;
             }
-            _ => return Err("Invalid character in path.".to_owned()),
+            _ => return Err(),
         }
     }
 

@@ -1,7 +1,7 @@
 //! Errors.
 
 use fallible_iterator::FallibleIterator;
-use postgres_protocol::message::backend::ErrorFields;
+use postgres_protocol::message::backend::{ErrorFields, FallibleIteratorError};
 use std::error;
 use std::convert::From;
 use std::fmt;
@@ -139,9 +139,23 @@ pub struct DbError {
     _p: (),
 }
 
+#[derive(Debug, Clone)]
+pub enum DbErrorCreateError {
+    FieldDidNotContainInteger(char),
+    FieldMissing(char),
+    AMissingButBPresent { a: char, b: char },
+    InvalidMessageLength(FallibleIteratorError),
+}
+
+impl From<FallibleIteratorError> for DbErrorCreateError {
+    fn from(e: FallibleIteratorError) -> Self {
+        DbErrorCreateError::InvalidMessageLength(e)
+    }
+}
+
 impl DbError {
     #[doc(hidden)]
-    pub fn new(fields: &mut ErrorFields) -> io::Result<DbError> {
+    pub fn new(fields: &mut ErrorFields) -> Result<DbError, DbErrorCreateError> {
         let mut severity = None;
         let mut parsed_severity = None;
         let mut code = None;
@@ -169,20 +183,12 @@ impl DbError {
                 b'D' => detail = Some(field.value().to_owned()),
                 b'H' => hint = Some(field.value().to_owned()),
                 b'P' => {
-                    normal_position = Some(field.value().parse::<u32>().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "`P` field did not contain an integer",
-                        )
-                    })?);
+                    normal_position = Some(field.value().parse::<u32>().map_err(|_|
+                        DbErrorCreateError::FieldDidNotContainInteger('P'))?);
                 }
                 b'p' => {
-                    internal_position = Some(field.value().parse::<u32>().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "`p` field did not contain an integer",
-                        )
-                    })?);
+                    internal_position = Some(field.value().parse::<u32>().map_err(|_|
+                        DbErrorCreateError::FieldDidNotContainInteger('p'))?);
                 }
                 b'q' => internal_query = Some(field.value().to_owned()),
                 b'W' => where_ = Some(field.value().to_owned()),
@@ -193,37 +199,23 @@ impl DbError {
                 b'n' => constraint = Some(field.value().to_owned()),
                 b'F' => file = Some(field.value().to_owned()),
                 b'L' => {
-                    line = Some(field.value().parse::<u32>().map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "`L` field did not contain an integer",
-                        )
-                    })?);
+                    line = Some(field.value().parse::<u32>().map_err(|_|
+                        DbErrorCreateError::FieldDidNotContainInteger('L'))?);
                 }
                 b'R' => routine = Some(field.value().to_owned()),
                 b'V' => {
-                    parsed_severity = Some(Severity::from_str(field.value()).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "`V` field contained an invalid value",
-                        )
-                    })?);
+                    parsed_severity = Some(Severity::from_str(field.value()).ok_or_else(||
+                        DbErrorCreateError::FieldDidNotContainInteger('V'))?);
                 }
                 _ => {}
             }
         }
 
         Ok(DbError {
-            severity: severity.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "`S` field missing")
-            })?,
+            severity: severity.ok_or_else(|| DbErrorCreateError::FieldMissing('S'))?,
             parsed_severity: parsed_severity,
-            code: code.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "`C` field missing")
-            })?,
-            message: message.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "`M` field missing")
-            })?,
+            code: code.ok_or_else(|| DbErrorCreateError::FieldMissing('C'))?,
+            message: message.ok_or_else(|| DbErrorCreateError::FieldMissing('M'))?,
             detail: detail,
             hint: hint,
             position: match normal_position {
@@ -233,12 +225,8 @@ impl DbError {
                         Some(position) => {
                             Some(ErrorPosition::Internal {
                                 position: position,
-                                query: internal_query.ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidInput,
-                                        "`q` field missing but `p` field present",
-                                    )
-                                })?,
+                                query: internal_query.ok_or_else(||
+                                    DbErrorCreateError::AMissingButBPresent { a: 'q', b: 'p' })?,
                             })
                         }
                         None => None,
@@ -309,75 +297,189 @@ pub enum ErrorPosition {
     },
 }
 
-#[doc(hidden)]
-pub fn connect(e: Box<error::Error + Sync + Send>) -> Error {
-    Error(Box::new(ErrorKind::ConnectParams(e)))
+#[derive(Debug, Clone)]
+pub enum UrlParseError {
+    InvalidConnectionTimeout,
+    InvalidKeepalive,
+    DecodeError(DecodeError),
 }
 
-#[doc(hidden)]
-pub fn tls(e: Box<error::Error + Sync + Send>) -> Error {
-    Error(Box::new(ErrorKind::Tls(e)))
+impl fmt::Display for UrlParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::UrlParseError::*;
+        match self {
+            InvalidConnectionTimeout => write!(f, "invalid connection timeout"),
+            InvalidKeepalive => write!(f, "invalid keepalive"),
+            DecodeError(e) => write!(f, "{}", e),
+        }
+    }
 }
 
-#[doc(hidden)]
-pub fn db(e: DbError) -> Error {
-    Error(Box::new(ErrorKind::Db(e)))
+#[derive(Debug, Clone)]
+pub enum DecodeError {
+    Component(ComponentDecodeError),
+    Scheme(SchemeDecodeError),
+    Authority(AuthorityDecodeError),
+    Path(PathDecodeError),
 }
 
-#[doc(hidden)]
-pub fn io(e: io::Error) -> Error {
-    Error(Box::new(ErrorKind::Io(e)))
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::DecodeError::*;
+        match self {
+            Component(c) => write!(f, "{}", c),
+            Scheme(s) => write!(f, "{}", s),
+            Authority(a) => write!(f, "{}", a),
+            Path(p) => write!(f, "{}", p),
+        }
+    }
 }
 
-#[doc(hidden)]
-pub fn conversion(e: Box<error::Error + Sync + Send>) -> Error {
-    Error(Box::new(ErrorKind::Conversion(e)))
+#[derive(Debug, Clone)]
+pub enum ComponentDecodeError {
+    NoTwoTrailingBytes,
+    PercentageSignNotEscaped,
 }
 
-#[derive(Debug)]
-enum ErrorKind {
-    ConnectParams(Box<error::Error + Sync + Send>),
-    Tls(Box<error::Error + Sync + Send>),
+impl fmt::Display for ComponentDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::ComponentDecodeError::*;
+        match self {
+            NoTwoTrailingBytes => write!(f, "no two trailing bytes"),
+            PercentageSignNotEscaped => write!(f, "% sign not escaped"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AuthorityDecodeError {
+    /// Illegal character in authority
+    IllegalCharacterAuthority,
+    /// Illegal characters in IPv6 address.
+    IllegalCharacterIPv6,
+    /// Invalid ':' in authority.
+    InvalidDoubleColon,
+    /// Invalid '@' in authority.
+    InvalidAtSign,
+    /// Non-digit characters in port.
+    PortHasNonDigitChars,
+    /// Failed to parse port: {:?}, port
+    FailedToParsePort(String),
+}
+
+impl fmt::Display for AuthorityDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::AuthorityDecodeError::*;
+        match self {
+            IllegalCharacterAuthority => write!(f, "Illegal character in authority"),
+            IllegalCharacterIPv6 => write!(f, "Illegal characters in IPv6 address"),
+            InvalidDoubleColon => write!(f, "Invalid ':' in authority"),
+            InvalidAtSign => write!(f, "Invalid '@' in authority"),
+            PortHasNonDigitChars => write!(f, "Non-digit characters in port number"),
+            FailedToParsePort(port) => write!(f, "Failed to parse port: {}", port),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PathDecodeError {
+    /// Invalid character in path.
+    InvalidCharacter,
+}
+
+impl fmt::Display for PathDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::PathDecodeError::*;
+        match self {
+            InvalidCharacter => write!(f, "Invalid character in path"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SchemeDecodeError {
+    // "url: Scheme must begin with a letter."
+    SchemeMustBeginWithLetter,
+    // "url: Scheme cannot be empty."
+    EmptyScheme,
+    // "url: Scheme must be terminated with a colon."
+    SchemeNotTerminatedWithColon,
+    InvalidCharacter,
+}
+
+impl fmt::Display for SchemeDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::SchemeDecodeError::*;
+        match self {
+            SchemeMustBeginWithLetter => write!(f, "url: Scheme must begin with a letter"),
+            EmptyScheme => write!(f, "url: Scheme cannot be empty"),
+            SchemeNotTerminatedWithColon => write!(f, "url: Scheme must be terminated with a colon"),
+            InvalidCharacter => write!(f, "url: Scheme contains invalid character(s)")
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TlsError {
+
+}
+
+impl fmt::Display for TlsError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::TlsError::*;
+        // TODO: build TlsError!!!
+        write!(f, "tls error")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PostgresIoError {
+    // io::Error
+}
+
+impl fmt::Display for PostgresIoError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::PostgresIoError::*;
+        // TODO: build TlsError!!!
+        write!(f, "postgres IO error")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ConversionError {
+    // Box<error::Error + Sync + Send>
+}
+
+impl fmt::Display for ConversionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::ConversionError::*;
+        // TODO: build TlsError!!!
+        write!(f, "conversion error")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ErrorKind {
+    ConnectParams(UrlParseError),
+    Tls(TlsError),
     Db(DbError),
-    Io(io::Error),
-    Conversion(Box<error::Error + Sync + Send>),
+    Io(PostgresIoError),
+    Conversion(ConversionError),
 }
 
 /// An error communicating with the Postgres server.
 #[derive(Debug)]
-pub struct Error(Box<ErrorKind>);
+pub struct Error(ErrorKind);
 
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.write_str(error::Error::description(self))?;
-        match *self.0 {
-            ErrorKind::ConnectParams(ref err) => write!(fmt, ": {}", err),
-            ErrorKind::Tls(ref err) => write!(fmt, ": {}", err),
-            ErrorKind::Db(ref err) => write!(fmt, ": {}", err),
-            ErrorKind::Io(ref err) => write!(fmt, ": {}", err),
-            ErrorKind::Conversion(ref err) => write!(fmt, ": {}", err),
-        }
-    }
-}
-
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self.0 {
-            ErrorKind::ConnectParams(_) => "invalid connection parameters",
-            ErrorKind::Tls(_) => "TLS handshake error",
-            ErrorKind::Db(_) => "database error",
-            ErrorKind::Io(_) => "IO error",
-            ErrorKind::Conversion(_) => "type conversion error",
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
-        match *self.0 {
-            ErrorKind::ConnectParams(ref err) => Some(&**err),
-            ErrorKind::Tls(ref err) => Some(&**err),
-            ErrorKind::Db(ref err) => Some(err),
-            ErrorKind::Io(ref err) => Some(err),
-            ErrorKind::Conversion(ref err) => Some(&**err),
+        use self::ErrorKind::*;
+        match self.0 {
+            ConnectParams(ref err) => write!(fmt, "ConnectParams Error: {}", err),
+            Tls(ref err) => write!(fmt, "TLS Error: {}", err),
+            Db(ref err) => write!(fmt, "DB Error: {}", err),
+            Io(ref err) => write!(fmt, "IO Error: {}", err),
+            Conversion(ref err) => write!(fmt, "Conversion Error: {}", err),
         }
     }
 }
@@ -386,54 +488,15 @@ impl Error {
     /// Returns the SQLSTATE error code associated with this error if it is a DB
     /// error.
     pub fn code(&self) -> Option<&SqlState> {
-        self.as_db().map(|e| &e.code)
-    }
-
-    /// Returns the inner error if this is a connection parameter error.
-    pub fn as_connection(&self) -> Option<&(error::Error + 'static + Sync + Send)> {
-        match *self.0 {
-            ErrorKind::ConnectParams(ref err) => Some(&**err),
-            _ => None,
-        }
-    }
-
-    /// Returns the `DbError` associated with this error if it is a DB error.
-    pub fn as_db(&self) -> Option<&DbError> {
-        match *self.0 {
-            ErrorKind::Db(ref err) => Some(err),
+        use self::ErrorKind::*;
+        match self.0 {
+            Db(ref err) => Some(&err.code),
             _ => None
         }
     }
 
-    /// Returns the inner error if this is a conversion error.
-    pub fn as_conversion(&self) -> Option<&(error::Error + 'static + Sync + Send)> {
-        match *self.0 {
-            ErrorKind::Conversion(ref err) => Some(&**err),
-            _ => None,
-        }
-    }
-
-    /// Returns the inner `io::Error` associated with this error if it is an IO
-    /// error.
-    pub fn as_io(&self) -> Option<&io::Error> {
-        match *self.0 {
-            ErrorKind::Io(ref err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error(Box::new(ErrorKind::Io(err)))
-    }
-}
-
-impl From<Error> for io::Error {
-    fn from(err: Error) -> io::Error {
-        match *err.0 {
-            ErrorKind::Io(e) => e,
-            _ => io::Error::new(io::ErrorKind::Other, err),
-        }
+    /// Returns the inner `ErrorKind` for this error for read-only access
+    pub fn kind(&self) -> &ErrorKind {
+        &self.0
     }
 }

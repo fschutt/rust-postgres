@@ -8,7 +8,6 @@ use std::cmp;
 use std::io::{self, Read};
 use std::ops::Range;
 use std::str;
-
 use Oid;
 
 /// An enum representing Postgres backend messages.
@@ -318,17 +317,14 @@ pub struct SaslMechanisms<'a>(&'a [u8]);
 
 impl<'a> FallibleIterator for SaslMechanisms<'a> {
     type Item = &'a str;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<&'a str>> {
+    fn next(&mut self) -> Result<Option<&'a str>, FallibleIteratorError> {
         let value_end = find_null(self.0, 0)?;
         if value_end == 0 {
             if self.0.len() != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
             Ok(None)
         } else {
@@ -424,23 +420,20 @@ pub struct ColumnFormats<'a> {
 
 impl<'a> FallibleIterator for ColumnFormats<'a> {
     type Item = u16;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<u16>> {
+    fn next(&mut self) -> Result<Option<u16>, FallibleIteratorError> {
         if self.remaining == 0 {
             if self.buf.is_empty() {
                 return Ok(None);
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
         }
 
         self.remaining -= 1;
-        self.buf.read_u16::<BigEndian>().map(Some)
+        self.buf.read_u16::<BigEndian>().map(Some).or_else(|e|Err(FallibleIteratorError::Io(e.kind())))
     }
 
     #[inline]
@@ -500,18 +493,15 @@ pub struct DataRowRanges<'a> {
 
 impl<'a> FallibleIterator for DataRowRanges<'a> {
     type Item = Option<Range<usize>>;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<Option<Range<usize>>>> {
+    fn next(&mut self) -> Result<Option<Option<Range<usize>>>, FallibleIteratorError> {
         if self.remaining == 0 {
             if self.buf.is_empty() {
                 return Ok(None);
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
         }
 
@@ -522,10 +512,7 @@ impl<'a> FallibleIterator for DataRowRanges<'a> {
         } else {
             let len = len as usize;
             if self.buf.len() < len {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "unexpected EOF",
-                ));
+                return Err(FallibleIteratorError::UnexpectedEof);
             }
             let base = self.len - self.buf.len();
             self.buf = &self.buf[len as usize..];
@@ -555,21 +542,34 @@ pub struct ErrorFields<'a> {
     buf: &'a [u8],
 }
 
+#[derive(Debug, Clone)]
+pub enum FallibleIteratorError {
+    /// Invalid message length
+    InvalidMessageLength,
+    /// Unexpected end of file marker
+    UnexpectedEof,
+    /// IO error (Usually decoding error a la `.read_u32::<BigEndian>()`)
+    Io(::std::io::ErrorKind),
+}
+
+impl From<::std::io::Error> for FallibleIteratorError {
+    fn from(e: ::std::io::Error) -> Self {
+        FallibleIteratorError::Io(e.kind())
+    }
+}
+
 impl<'a> FallibleIterator for ErrorFields<'a> {
     type Item = ErrorField<'a>;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<ErrorField<'a>>> {
+    fn next(&mut self) -> Result<Option<ErrorField<'a>>, FallibleIteratorError> {
         let type_ = self.buf.read_u8()?;
         if type_ == 0 {
             if self.buf.is_empty() {
                 return Ok(None);
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
         }
 
@@ -657,23 +657,20 @@ pub struct Parameters<'a> {
 
 impl<'a> FallibleIterator for Parameters<'a> {
     type Item = Oid;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<Oid>> {
+    fn next(&mut self) -> Result<Option<Oid>, FallibleIteratorError> {
         if self.remaining == 0 {
             if self.buf.is_empty() {
                 return Ok(None);
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
         }
 
         self.remaining -= 1;
-        self.buf.read_u32::<BigEndian>().map(Some)
+        self.buf.read_u32::<BigEndian>().map(Some).or_else(|e|Err(FallibleIteratorError::Io(e.kind())))
     }
 
     #[inline]
@@ -733,18 +730,15 @@ pub struct Fields<'a> {
 
 impl<'a> FallibleIterator for Fields<'a> {
     type Item = Field<'a>;
-    type Error = io::Error;
+    type Error = FallibleIteratorError;
 
     #[inline]
-    fn next(&mut self) -> io::Result<Option<Field<'a>>> {
+    fn next(&mut self) -> Result<Option<Field<'a>>, FallibleIteratorError> {
         if self.remaining == 0 {
             if self.buf.is_empty() {
                 return Ok(None);
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid message length",
-                ));
+                return Err(FallibleIteratorError::InvalidMessageLength);
             }
         }
 

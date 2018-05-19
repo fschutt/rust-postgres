@@ -1,6 +1,5 @@
 use fallible_iterator::FallibleIterator;
-use postgres_protocol::message::backend::DataRowBody;
-use std::io;
+use postgres_protocol::message::backend::{DataRowBody, FallibleIteratorError};
 use std::ops::Range;
 
 use rows::sealed::Sealed;
@@ -72,7 +71,7 @@ pub struct RowData {
 }
 
 impl RowData {
-    pub fn new(body: DataRowBody) -> io::Result<RowData> {
+    pub fn new(body: DataRowBody) -> Result<RowData, FallibleIteratorError> {
         let ranges = body.ranges().collect()?;
         Ok(RowData {
             body: body,

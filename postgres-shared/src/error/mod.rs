@@ -304,6 +304,12 @@ pub enum UrlParseError {
     DecodeError(DecodeError),
 }
 
+impl From<DecodeError> for UrlParseError {
+    fn from(e: DecodeError) -> Self {
+        UrlParseError::DecodeError(e)
+    }
+}
+
 impl fmt::Display for UrlParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::UrlParseError::*;
@@ -321,16 +327,18 @@ pub enum DecodeError {
     Scheme(SchemeDecodeError),
     Authority(AuthorityDecodeError),
     Path(PathDecodeError),
+    QueryFragment(QueryFragmentDecodeError)
 }
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::DecodeError::*;
-        match self {
-            Component(c) => write!(f, "{}", c),
-            Scheme(s) => write!(f, "{}", s),
-            Authority(a) => write!(f, "{}", a),
-            Path(p) => write!(f, "{}", p),
+        match *self {
+            Component(ref c) => write!(f, "{}", c),
+            Scheme(ref s) => write!(f, "{}", s),
+            Authority(ref a) => write!(f, "{}", a),
+            Path(ref p) => write!(f, "{}", p),
+            QueryFragment(ref q) => write!(f, "{}", q),
         }
     }
 }
@@ -382,9 +390,26 @@ impl fmt::Display for AuthorityDecodeError {
 }
 
 #[derive(Debug, Clone)]
+pub enum QueryFragmentDecodeError {
+    /// Query didn't start with '?': '{}..'
+    QueryDidntStartWithQuestionMark(String)
+}
+
+impl fmt::Display for QueryFragmentDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::QueryFragmentDecodeError::*;
+        match self {
+            QueryDidntStartWithQuestionMark(before_fragment) => write!(f, "Query didn't start with '?': '{}..'", before_fragment),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum PathDecodeError {
     /// Invalid character in path.
     InvalidCharacter,
+    /// Non-empty path must begin with '/' in presence of authority.
+    PathMustStartWithSlash
 }
 
 impl fmt::Display for PathDecodeError {
@@ -392,6 +417,7 @@ impl fmt::Display for PathDecodeError {
         use self::PathDecodeError::*;
         match self {
             InvalidCharacter => write!(f, "Invalid character in path"),
+            PathMustStartWithSlash => write!(f, "Non-empty path must begin with '/' in presence of authority"),
         }
     }
 }

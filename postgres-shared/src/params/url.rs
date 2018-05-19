@@ -9,7 +9,14 @@
 // except according to those terms.
 use std::str::FromStr;
 use hex::FromHex;
-use error::{DecodeError, AuthorityDecodeError, ComponentDecodeError, SchemeDecodeError};
+use error::{
+    DecodeError,
+    AuthorityDecodeError,
+    ComponentDecodeError,
+    SchemeDecodeError,
+    PathDecodeError,
+    QueryFragmentDecodeError,
+};
 
 pub struct Url {
     pub scheme: String,
@@ -128,11 +135,11 @@ fn decode_inner(c: &str, full_url: bool) -> DecodeResult<String> {
                     '%' => {
                         let bytes = match (iter.next(), iter.next()) {
                             (Some(one), Some(two)) => [one, two],
-                            _ => return Err(ComponentDecodeError::NoTwoTrailingBytes),
+                            _ => return Err(DecodeError::Component(ComponentDecodeError::NoTwoTrailingBytes).into()),
                         };
                         let bytes_from_hex = match Vec::<u8>::from_hex(&bytes) {
                             Ok(b) => b,
-                            _ => return Err(ComponentDecodeError::PercentageSignNotEscaped),
+                            _ => return Err(DecodeError::Component(ComponentDecodeError::PercentageSignNotEscaped).into()),
                         };
 
                         // Only decode some characters if full_url:
@@ -383,14 +390,12 @@ fn get_path(rawurl: &str, is_authority: bool) -> DecodeResult<(String, &str)> {
                 end = i;
                 break;
             }
-            _ => return Err(),
+            _ => return Err(DecodeError::Path(PathDecodeError::PathMustStartWithSlash)),
         }
     }
 
     if is_authority && end != 0 && !rawurl.starts_with('/') {
-        Err(
-            "Non-empty path must begin with '/' in presence of authority.".to_owned(),
-        )
+        Err(DecodeError::Path(PathDecodeError::PathMustStartWithSlash))
     } else {
         Ok((decode_component(&rawurl[0..end])?, &rawurl[end..len]))
     }
@@ -409,23 +414,20 @@ fn get_query_fragment(rawurl: &str) -> DecodeResult<(Query, Option<String>)> {
     match before_fragment.chars().next() {
         Some('?') => Ok((query_from_str(&before_fragment[1..])?, fragment)),
         None => Ok((vec![], fragment)),
-        _ => Err(format!(
-            "Query didn't start with '?': '{}..'",
-            before_fragment
-        )),
+        _ => Err(DecodeError::QueryFragment(QueryFragmentDecodeError::QueryDidntStartWithQuestionMark(before_fragment.to_owned()))),
     }
 }
 
 impl FromStr for Url {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Url, String> {
+    type Err = DecodeError;
+    fn from_str(s: &str) -> Result<Url, DecodeError> {
         Url::parse(s)
     }
 }
 
 impl FromStr for Path {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Path, String> {
+    type Err = DecodeError;
+    fn from_str(s: &str) -> Result<Path, DecodeError> {
         Path::parse(s)
     }
 }

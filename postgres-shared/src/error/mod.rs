@@ -5,7 +5,6 @@ use postgres_protocol::message::backend::{ErrorFields, FallibleIteratorError};
 use std::error;
 use std::convert::From;
 use std::fmt;
-use std::io;
 
 pub use self::sqlstate::*;
 
@@ -447,14 +446,16 @@ impl fmt::Display for SchemeDecodeError {
 
 #[derive(Debug, Clone)]
 pub enum TlsError {
-
+    /// the server does not support TLS
+    TlsUnsupported,
 }
 
 impl fmt::Display for TlsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::TlsError::*;
-        // TODO: build TlsError!!!
-        write!(f, "tls error")
+        match self {
+            TlsUnsupported => write!(f, "the server does not support TLS"),
+        }
     }
 }
 
@@ -472,6 +473,21 @@ impl fmt::Display for PostgresIoError {
 }
 
 #[derive(Debug, Clone)]
+pub enum ServerError {
+    // the server returned an unexpected response
+    UnexpectedResponse,
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::ServerError::*;
+        match self {
+            UnexpectedResponse => write!(f, "the server returned an unexpected response"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum ConversionError {
     // Box<error::Error + Sync + Send>
 }
@@ -484,18 +500,15 @@ impl fmt::Display for ConversionError {
     }
 }
 
+/// An error communicating with the Postgres server.
 #[derive(Debug, Clone)]
-pub enum ErrorKind {
+pub enum Error {
     ConnectParams(UrlParseError),
     Tls(TlsError),
     Db(DbError),
     Io(PostgresIoError),
     Conversion(ConversionError),
 }
-
-/// An error communicating with the Postgres server.
-#[derive(Debug)]
-pub struct Error(ErrorKind);
 
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -514,15 +527,10 @@ impl Error {
     /// Returns the SQLSTATE error code associated with this error if it is a DB
     /// error.
     pub fn code(&self) -> Option<&SqlState> {
-        use self::ErrorKind::*;
-        match self.0 {
+        use self::Error::*;
+        match self {
             Db(ref err) => Some(&err.code),
             _ => None
         }
-    }
-
-    /// Returns the inner `ErrorKind` for this error for read-only access
-    pub fn kind(&self) -> &ErrorKind {
-        &self.0
     }
 }

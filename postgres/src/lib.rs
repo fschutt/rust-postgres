@@ -198,7 +198,7 @@ where
 fn bad_response() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "the server returned an unexpected response",
+        "",
     )
 }
 

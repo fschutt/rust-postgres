@@ -9,7 +9,7 @@ use error::DbError;
 #[doc(inline)]
 use postgres_shared;
 pub use postgres_shared::Notification;
-
+use postgres_shared::error::{DbErrorCreateError};
 use {desynchronized, Result, Connection};
 use error::Error;
 
@@ -201,9 +201,6 @@ impl<'a> FallibleIterator for TimeoutIter<'a> {
     }
 }
 
-fn err(fields: &mut ErrorFields) -> Error {
-    match DbError::new(fields) {
-        Ok(err) => postgres_shared::error::db(err),
-        Err(err) => err.into(),
-    }
+fn err(fields: &mut ErrorFields) -> DbErrorCreateError {
+    DbError::new(fields)
 }

@@ -296,8 +296,8 @@ pub fn sasl_response(data: &[u8], buf: &mut Vec<u8>) -> io::Result<()> {
 }
 
 #[inline]
-pub fn ssl_request(buf: &mut Vec<u8>) {
-    write_body(buf, |buf| buf.write_i32::<BigEndian>(80877103)).unwrap();
+pub fn ssl_request(buf: &mut Vec<u8>) -> io::Result<()> {
+    write_body(buf, |buf| buf.write_i32::<BigEndian>(80877103))
 }
 
 #[inline]

@@ -225,7 +225,7 @@ fn open_socket(params: &ConnectParams) -> Result<Socket> {
     }
 }
 
-pub fn initialize_stream(params: &ConnectParams, tls: TlsMode) -> Result<Box<TlsStream>> {
+pub fn initialize_stream(params: &ConnectParams, tls: TlsMode) -> Result<Box<TlsStream>, Error> {
     let mut socket = Stream(open_socket(params)?);
 
     let (tls_required, handshaker) = match tls {
@@ -235,15 +235,16 @@ pub fn initialize_stream(params: &ConnectParams, tls: TlsMode) -> Result<Box<Tls
     };
 
     let mut buf = vec![];
-    frontend::ssl_request(&mut buf);
+    frontend::ssl_request(&mut buf)?;
     socket.write_all(&buf)?;
     socket.flush()?;
 
     let mut b = [0; 1];
     socket.read_exact(&mut b)?;
+
     if b[0] == b'N' {
         if tls_required {
-            return Err(error::tls("the server does not support TLS".into()));
+            return Err(Error::Tls(TlsError::TlsUnsupported));
         } else {
             return Ok(Box::new(socket));
         }
@@ -252,7 +253,7 @@ pub fn initialize_stream(params: &ConnectParams, tls: TlsMode) -> Result<Box<Tls
     let host = match *params.host() {
         Host::Tcp(ref host) => host,
         // Postgres doesn't support TLS over unix sockets
-        Host::Unix(_) => return Err(::bad_response().into()),
+        Host::Unix(_) => return Err(Error::Server(ServerError::UnexpectedResponse)),
     };
 
     handshaker.tls_handshake(host, socket).map_err(error::tls)
